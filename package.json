@@ -1,7 +1,11 @@
 {
   "name": "koishi-plugin-lottery-lizard",
-  "description": "适配monetary的买彩票插件",
+  "description": "适配monetary的自定义积分彩票插件，有刮刮乐和大乐透",
   "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lizard0126/lottery-lizard.git"
+  },
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -9,14 +13,21 @@
     "dist"
   ],
   "license": "MIT",
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
-    "plugin"
+    "plugin",
+    "彩票",
+    "积分",
+    "monetary"
   ],
-  "devDependencies": {},
   "peerDependencies": {
     "koishi": "4.18.8"
+  },
+  "service": {
+    "required": [
+      "monetary",
+      "database"
+    ]
   }
 }
