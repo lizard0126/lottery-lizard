@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-lottery-lizard",
   "description": "适配monetary的自定义积分彩票插件，有刮刮乐和大乐透",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lizard0126/lottery-lizard.git"

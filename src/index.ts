@@ -51,8 +51,9 @@ export const usage = `
 
 ### 玩法简介：
 
-- 消耗 <code>5积分</code> 抽奖一次，系统自动返回中奖结果。可一次抽多张
-- 获得的奖励直接发放到用户账户。
+- 消耗积分购买一次刮刮乐，系统自动返回中奖结果。可一次购买多张
+- 限制一次最多购买数量，由于方差太大，购买数量过高时会导致盈利概率飙升
+- 可以参考控制台给出的期望方差等信息调整奖项权重设置
 
 ---
 
@@ -79,6 +80,8 @@ export const usage = `
 export interface Config {
   currency: string
   prizes: { prob: number; reward: number; name: string }[]
+  costPerTicket: number
+  maxTicketCount: number
   logExpectation?: boolean
 }
 
@@ -90,17 +93,19 @@ export const Config: Schema<Config> = Schema.object({
       reward: Schema.number().description('中奖金额'),
       name: Schema.string().description('奖项名称'),
     })
-  ).role('table').description('奖项设置').default([
+  ).role('table').description('刮刮乐奖项设置').default([
     { prob: 1, reward: 4999, name: '天选之人' },
-    { prob: 15, reward: 1000, name: '至尊欧皇' },
+    { prob: 5, reward: 1000, name: '至尊欧皇' },
     { prob: 100, reward: 100, name: '欧洲人' },
-    { prob: 130, reward: 50, name: '疯狂星期四' },
-    { prob: 150, reward: 30, name: '运气爆棚' },
-    { prob: 200, reward: 20, name: '狗屎运' },
-    { prob: 3000, reward: 5, name: '再来一张' },
+    { prob: 300, reward: 50, name: '疯狂星期四' },
+    { prob: 800, reward: 30, name: '运气爆棚' },
+    { prob: 1000, reward: 20, name: '狗屎运' },
+    { prob: 80000, reward: 5, name: '再来一张' },
     { prob: 6000, reward: 2, name: '安慰奖' },
   ]),
-  logExpectation: Schema.boolean().default(false).description('更新prizes后是否在控制台输出数学期望'),
+  costPerTicket: Schema.number().min(1).default(5).description('刮刮乐每张的价格'),
+  maxTicketCount: Schema.number().min(1).default(10).description('最多一次购买的刮刮乐数量'),
+  logExpectation: Schema.boolean().default(false).description('更新刮刮乐奖项后是否在控制台输出数学期望'),
 })
 
 declare module 'koishi' {
@@ -139,23 +144,76 @@ function drawPrize(prizes) {
   }
 }
 
-export function apply(ctx: Context, config: Config) {
-  function updateExpectation(cfg: Config) {
-    const prizes = cfg.prizes || []
-    const totalProb = prizes.reduce((sum, p) => sum + p.prob, 0)
-    const totalReward = prizes.reduce((sum, p) => sum + p.prob * p.reward, 0)
-    const expectation = totalProb ? totalReward / totalProb : 0
+function updateExpectation(ctx: Context, config: Config) {
+  const prizes = config.prizes || []
+  const totalProb = prizes.reduce((sum, p) => sum + p.prob, 0)
 
-    if (cfg.logExpectation) {
-      ctx.logger.info(`当前数学期望: ${expectation.toFixed(2)}`)
-    }
+  if (totalProb <= 0) {
+    ctx.logger.warn('奖项概率总和为 0，无法计算期望')
+    return
   }
 
+  const pList = prizes.map(p => ({
+    ...p,
+    probability: p.prob / totalProb,
+  }))
+  const expectation = pList.reduce((sum, p) => sum + p.probability * p.reward, 0)
+  const variance = pList.reduce((sum, p) => sum + p.probability * Math.pow(p.reward - expectation, 2), 0)
+
+  const hitRates = pList.map(p => `${p.name}: ${(p.probability * 100).toFixed(3)}%`).join(', ')
+
+  function pmfSingle() {
+    const m = new Map<number, number>()
+    for (const p of pList) {
+      m.set(p.reward, (m.get(p.reward) || 0) + p.probability)
+    }
+    return m
+  }
+  function convolve(a: Map<number, number>, b: Map<number, number>) {
+    const c = new Map<number, number>()
+    for (const [ra, pa] of a) {
+      for (const [rb, pb] of b) {
+        const r = ra + rb
+        c.set(r, (c.get(r) || 0) + pa * pb)
+      }
+    }
+    return c
+  }
+  function pmfNTickets(n: number) {
+    let cur = pmfSingle()
+    for (let i = 2; i <= n; i++) {
+      cur = convolve(cur, pmfSingle())
+    }
+    return cur
+  }
+  const totalCost = config.costPerTicket * config.maxTicketCount
+
+  const pmf10 = pmfNTickets(config.maxTicketCount)
+  let loseRate = 0, tieRate = 0, winRate = 0
+  for (const [sumReward, prob] of pmf10) {
+    if (sumReward < totalCost) loseRate += prob
+    else if (sumReward === totalCost) tieRate += prob
+    else winRate += prob
+  }
+
+  if (config.logExpectation) {
+    ctx.logger.info(`单张数学期望: ${expectation.toFixed(3)}`)
+    ctx.logger.info(`单张方差: ${variance.toFixed(3)}`)
+    ctx.logger.info(`各档单次命中率: ${hitRates}`)
+    ctx.logger.info(`买 ${config.maxTicketCount} 张（总成本 ${totalCost}）概率分布:`)
+    ctx.logger.info(`亏损率: ${(loseRate * 100).toFixed(2)}%`)
+    ctx.logger.info(`平手率: ${(tieRate * 100).toFixed(2)}%`)
+    ctx.logger.info(`盈利率: ${(winRate * 100).toFixed(2)}%`)
+  }
+}
+
+export function apply(ctx: Context, config: Config) {
   ctx.on(`config:${name}` as any, (newConfig: Config) => {
-    updateExpectation(newConfig)
+    updateExpectation(ctx, newConfig)
   })
 
-  updateExpectation(config)
+  updateExpectation(ctx, config)
+
   const currency = config.currency
   const logger = ctx.logger(name)
 
@@ -187,7 +245,6 @@ export function apply(ctx: Context, config: Config) {
       return false
     }
   }
-
 
   const dlt = ctx.command('大乐透', '来一局大乐透')
   dlt
@@ -331,6 +388,9 @@ export function apply(ctx: Context, config: Config) {
     .userFields(['id'])
     .action(async ({ session }, count = 1) => {
       count = Math.max(1, Math.floor(count))
+      if (count > config.maxTicketCount) await session.send(`一次最多只能购买${config.maxTicketCount}张刮刮乐！`)
+      count = Math.min(count, config.maxTicketCount)
+
       const uid = session.user.id
       const [row] = await ctx.database.get('monetary', { uid, currency });
 
@@ -339,7 +399,7 @@ export function apply(ctx: Context, config: Config) {
         return `你还没有${currency}记录，已为你赠送20${currency}作为初始资金。`
       }
 
-      const cost = 5 * count
+      const cost = config.costPerTicket * count
       if (row.value < cost) {
         return `你的${currency}不足（需要${cost}${currency}）`
       }
@@ -347,7 +407,7 @@ export function apply(ctx: Context, config: Config) {
       const deductSuccess = await updateUserCurrency(uid, -cost)
       if (!deductSuccess) return `购买失败，请稍后再试`
 
-      await session.sendQueued(`你花费${cost}${currency}购买了${count}张刮刮乐，刮开涂层中...`)
+      await session.sendQueued(`你花费${cost}${currency}购买了${count}张刮刮乐，刮开涂层中…`)
       await new Promise(resolve => setTimeout(resolve, 3000))
 
       let totalReward = 0
